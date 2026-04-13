@@ -36,7 +36,13 @@ const API_PORT = parseInt(process.env.API_PORT || '3001', 10);
 // ── Express app ────────────────────────────────────────────────────────────────
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || '*',
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: false,
+}));
+app.options('*', cors());
 app.use(express.json());
 
 // ── REST API routes ────────────────────────────────────────────────────────────
