@@ -10,6 +10,7 @@
     "start": "node dist/server.js",
     "dev": "nodemon --watch src --ext ts --exec ts-node src/server.ts",
     "dev:ui": "cd ui && npm run dev",
+    "migrate": "ts-node migrate.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {
