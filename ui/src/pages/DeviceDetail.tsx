@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { MapContainer, TileLayer, Marker, Polyline, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Polyline, CircleMarker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import {
@@ -26,6 +26,18 @@ L.Icon.Default.mergeOptions({
 function AutoCenter({ lat, lng }: { lat: number; lng: number }) {
   const map = useMap();
   map.setView([lat, lng], map.getZoom());
+  return null;
+}
+
+function FitRoute({ positions }: { positions: [number, number][] }) {
+  const map = useMap();
+  useEffect(() => {
+    if (positions.length > 1) {
+      map.fitBounds(L.latLngBounds(positions), { padding: [40, 40], maxZoom: 16 });
+    } else if (positions.length === 1) {
+      map.setView(positions[0], 14);
+    }
+  }, [map, positions]);
   return null;
 }
 
@@ -301,44 +313,158 @@ export function DeviceDetail() {
         </div>
       )}
 
-      {tab === 'locations' && (
-        <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
-          <div className="px-5 py-3 border-b border-slate-700 text-sm text-slate-400">
-            {locApi.data?.length ?? 0} ta yozuv (so'nggi 50)
+      {tab === 'locations' && (() => {
+        // API newest-first → reverse for chronological polyline
+        const locs = locApi.data ?? [];
+        const chronological = [...locs].reverse();
+        const routePoints: [number, number][] = chronological
+          .filter((l) => l.latitude != null && l.longitude != null && (l.latitude !== 0 || l.longitude !== 0))
+          .map((l) => [l.latitude, l.longitude]);
+        const startPt = routePoints[0] ?? null;
+        const endPt   = routePoints.length > 1 ? routePoints[routePoints.length - 1] : null;
+        const mapCenter: [number, number] = endPt ?? startPt ?? [lat ?? 41.2995, lng ?? 69.2401];
+
+        return (
+          <div className="space-y-4">
+            {/* Route map */}
+            <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden" style={{ height: 420 }}>
+              <div className="px-5 py-3 border-b border-slate-700 flex items-center justify-between">
+                <span className="text-sm font-medium text-slate-200">Yurgan yo'l tarixi</span>
+                <div className="flex items-center gap-4 text-xs text-slate-500">
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded-full bg-emerald-500 inline-block" /> Boshlanish
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded-full bg-red-500 inline-block" /> So'nggi
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-5 h-0.5 bg-blue-400 inline-block" /> Yo'l
+                  </span>
+                  <span>{routePoints.length} nuqta</span>
+                </div>
+              </div>
+              <MapContainer center={mapCenter} zoom={13} className="w-full" style={{ height: 360 }}>
+                <TileLayer
+                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                />
+                <FitRoute positions={routePoints} />
+
+                {/* Route polyline */}
+                {routePoints.length > 1 && (
+                  <Polyline
+                    positions={routePoints}
+                    pathOptions={{ color: '#3b82f6', weight: 3, opacity: 0.8 }}
+                  />
+                )}
+
+                {/* Intermediate points */}
+                {chronological
+                  .filter((l) => l.latitude != null && l.longitude != null && (l.latitude !== 0 || l.longitude !== 0))
+                  .map((loc, i) => {
+                    const isFirst = i === 0;
+                    const isLast  = i === chronological.filter((l) => l.latitude != null && l.longitude != null && (l.latitude !== 0 || l.longitude !== 0)).length - 1;
+                    if (isFirst || isLast) return null; // handled separately below
+                    return (
+                      <CircleMarker
+                        key={loc.id}
+                        center={[loc.latitude, loc.longitude]}
+                        radius={4}
+                        pathOptions={{
+                          color: loc.gps_valid ? '#3b82f6' : '#f59e0b',
+                          fillColor: loc.gps_valid ? '#3b82f6' : '#f59e0b',
+                          fillOpacity: 0.7,
+                          weight: 1,
+                        }}
+                      >
+                        <Popup>
+                          <div className="text-xs space-y-1">
+                            <div className="font-semibold">{format(new Date(loc.created_at), 'dd.MM.yyyy HH:mm:ss')}</div>
+                            <div>{loc.latitude?.toFixed(6)}, {loc.longitude?.toFixed(6)}</div>
+                            <div>Tezlik: {loc.speed} km/h</div>
+                            <div>GPS: <span className={loc.gps_valid ? 'text-green-600' : 'text-red-500'}>{loc.gps_valid ? 'Aniq' : 'Taxminiy'}</span></div>
+                            {loc.battery != null && <div>Batareya: {loc.battery}%</div>}
+                          </div>
+                        </Popup>
+                      </CircleMarker>
+                    );
+                  })}
+
+                {/* Start marker (green) */}
+                {startPt && (
+                  <CircleMarker
+                    center={startPt}
+                    radius={8}
+                    pathOptions={{ color: '#059669', fillColor: '#10b981', fillOpacity: 1, weight: 2 }}
+                  >
+                    <Popup>
+                      <div className="text-xs font-semibold">Boshlanish nuqtasi<br />
+                        {chronological.find((l) => l.latitude != null && l.longitude != null && (l.latitude !== 0 || l.longitude !== 0)) &&
+                          format(new Date(chronological.find((l) => l.latitude != null)!.created_at), 'dd.MM.yyyy HH:mm:ss')
+                        }
+                      </div>
+                    </Popup>
+                  </CircleMarker>
+                )}
+
+                {/* End marker (red) */}
+                {endPt && (
+                  <CircleMarker
+                    center={endPt}
+                    radius={8}
+                    pathOptions={{ color: '#dc2626', fillColor: '#ef4444', fillOpacity: 1, weight: 2 }}
+                  >
+                    <Popup>
+                      <div className="text-xs font-semibold">So'nggi nuqta<br />
+                        {locs[0] && format(new Date(locs[0].created_at), 'dd.MM.yyyy HH:mm:ss')}
+                      </div>
+                    </Popup>
+                  </CircleMarker>
+                )}
+              </MapContainer>
+            </div>
+
+            {/* Locations table */}
+            <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
+              <div className="px-5 py-3 border-b border-slate-700 text-sm text-slate-400">
+                {locs.length} ta yozuv (so'nggi 50)
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-slate-500 border-b border-slate-700 bg-slate-800/80">
+                      {['#', 'Vaqt', 'GPS', 'Kenglik', 'Uzunlik', 'Tezlik', 'Batareya', 'Signal', 'MCC/MNC'].map((h) => (
+                        <th key={h} className="px-4 py-3 font-medium">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-700/40">
+                    {locs.map((loc, i) => (
+                      <tr key={loc.id} className="hover:bg-slate-700/20">
+                        <td className="px-4 py-2.5 text-slate-600 font-mono">{locs.length - i}</td>
+                        <td className="px-4 py-2.5 text-slate-400 font-mono">
+                          {format(new Date(loc.created_at), 'dd.MM HH:mm:ss')}
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <span className={`font-medium ${loc.gps_valid ? 'text-emerald-400' : 'text-amber-400'}`}>
+                            {loc.gps_valid ? 'A' : 'V'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2.5 font-mono text-slate-300">{loc.latitude?.toFixed(6)}</td>
+                        <td className="px-4 py-2.5 font-mono text-slate-300">{loc.longitude?.toFixed(6)}</td>
+                        <td className="px-4 py-2.5 text-slate-300">{loc.speed} km/h</td>
+                        <td className="px-4 py-2.5"><BatteryBar value={loc.battery} showText={false} /></td>
+                        <td className="px-4 py-2.5"><SignalBars value={loc.gsm_signal} /></td>
+                        <td className="px-4 py-2.5 text-slate-500 font-mono">{loc.mcc}/{loc.mnc}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-slate-500 border-b border-slate-700 bg-slate-800/80">
-                  {['Vaqt', 'GPS', 'Kenglik', 'Uzunlik', 'Tezlik', 'Batareya', 'Signal', 'MCC/MNC'].map((h) => (
-                    <th key={h} className="px-4 py-3 font-medium">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-700/40">
-                {(locApi.data ?? []).map((loc) => (
-                  <tr key={loc.id} className="hover:bg-slate-700/20">
-                    <td className="px-4 py-2.5 text-slate-400 font-mono">
-                      {format(new Date(loc.created_at), 'dd.MM HH:mm:ss')}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <span className={`font-medium ${loc.gps_valid ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {loc.gps_valid ? 'A' : 'V'}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 font-mono text-slate-300">{loc.latitude?.toFixed(6)}</td>
-                    <td className="px-4 py-2.5 font-mono text-slate-300">{loc.longitude?.toFixed(6)}</td>
-                    <td className="px-4 py-2.5 text-slate-300">{loc.speed} km/h</td>
-                    <td className="px-4 py-2.5"><BatteryBar value={loc.battery} showText={false} /></td>
-                    <td className="px-4 py-2.5"><SignalBars value={loc.gsm_signal} /></td>
-                    <td className="px-4 py-2.5 text-slate-500 font-mono">{loc.mcc}/{loc.mnc}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       {tab === 'alarms' && (
         <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
