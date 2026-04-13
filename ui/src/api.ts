@@ -32,7 +32,12 @@ export const api = {
   stats: ()                                        => get<Stats>('/stats'),
   devices: ()                                      => get<Device[]>('/devices'),
   device: (imei: string)                           => get<Device>(`/devices/${imei}`),
-  locations: (imei: string, limit = 100)           => get<Location[]>(`/devices/${imei}/locations?limit=${limit}`),
+  locations: (imei: string, limit = 100, from?: string, to?: string) => {
+    const p = new URLSearchParams({ limit: String(limit) });
+    if (from) p.set('from', from);
+    if (to)   p.set('to',   to);
+    return get<Location[]>(`/devices/${imei}/locations?${p}`);
+  },
   deviceAlarms: (imei: string, limit = 50)         => get<Alarm[]>(`/devices/${imei}/alarms?limit=${limit}`),
   deviceHealth: (imei: string, limit = 50)         => get<HealthRecord[]>(`/devices/${imei}/health?limit=${limit}`),
   deviceHeartbeats: (imei: string, limit = 50)     => get<Heartbeat[]>(`/devices/${imei}/heartbeats?limit=${limit}`),

@@ -538,9 +538,24 @@ export async function getDevice(imei: string): Promise<unknown | null> {
   }
 }
 
-export async function getLocations(imei: string, limit = 100, offset = 0): Promise<unknown[]> {
+export async function getLocations(imei: string, limit = 100, offset = 0, from?: string, to?: string): Promise<unknown[]> {
   try {
     const db = getPool();
+    const params: unknown[] = [imei];
+    const conditions: string[] = ['d.imei = $1'];
+
+    if (from) {
+      params.push(new Date(from));
+      conditions.push(`l.received_at >= $${params.length}`);
+    }
+    if (to) {
+      params.push(new Date(to));
+      conditions.push(`l.received_at <= $${params.length}`);
+    }
+
+    params.push(limit);
+    params.push(offset);
+
     const result = await db.query(
       `SELECT l.id,
               d.imei,
@@ -558,9 +573,9 @@ export async function getLocations(imei: string, limit = 100, offset = 0): Promi
               l.received_at AS created_at
          FROM locations l
          JOIN devices d ON d.id = l.device_id
-        WHERE d.imei = $1
-        ORDER BY l.received_at DESC LIMIT $2 OFFSET $3`,
-      [imei, limit, offset]
+        WHERE ${conditions.join(' AND ')}
+        ORDER BY l.received_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params
     );
     return result.rows;
   } catch {

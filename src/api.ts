@@ -151,9 +151,11 @@ app.delete('/api/persons/:id', async (req: Request, res: Response) => {
 
 app.get('/api/devices/:imei/locations', async (req: Request, res: Response) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit as string || '100', 10), 1000);
+    const limit = Math.min(parseInt(req.query.limit as string || '100', 10), 5000);
     const offset = parseInt(req.query.offset as string || '0', 10);
-    const rows = await getLocations(req.params.imei, limit, offset);
+    const from = req.query.from as string | undefined;
+    const to   = req.query.to   as string | undefined;
+    const rows = await getLocations(req.params.imei, limit, offset, from, to);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });

@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Polyline, CircleMarker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import {
   ArrowLeft, MapPin, Heart, Activity, Bell, Smartphone, Terminal, Camera, Watch, UserCheck, X,
+  Play, Pause, SkipBack, SkipForward, Search,
 } from 'lucide-react';
 import { DeviceCommands } from './DeviceCommands';
-import { formatDistanceToNow, format } from 'date-fns';
+import { formatDistanceToNow, format, subHours } from 'date-fns';
 import { useApi } from '../hooks/useApi';
 import { useApp } from '../context/AppContext';
 import { api } from '../api';
@@ -29,7 +30,7 @@ function AutoCenter({ lat, lng }: { lat: number; lng: number }) {
   return null;
 }
 
-function FitRoute({ positions }: { positions: [number, number][] }) {
+function FitRoute({ positions, trigger }: { positions: [number, number][]; trigger: number }) {
   const map = useMap();
   useEffect(() => {
     if (positions.length > 1) {
@@ -37,8 +38,22 @@ function FitRoute({ positions }: { positions: [number, number][] }) {
     } else if (positions.length === 1) {
       map.setView(positions[0], 14);
     }
-  }, [map, positions]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, trigger]);
   return null;
+}
+
+function PanToPlay({ pos }: { pos: [number, number] | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (pos) map.panTo(pos, { animate: true, duration: 0.3 });
+  }, [map, pos]);
+  return null;
+}
+
+function toLocalDatetimeInput(d: Date) {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 type Tab = 'overview' | 'locations' | 'alarms' | 'health' | 'heartbeats' | 'wearing' | 'commands' | 'photos';
@@ -51,14 +66,62 @@ export function DeviceDetail() {
   const [savingPerson, setSavingPerson] = useState(false);
   const [personMessage, setPersonMessage] = useState<string | null>(null);
 
+  // Date range filter for locations tab
+  const [fromDt, setFromDt] = useState(() => toLocalDatetimeInput(subHours(new Date(), 24)));
+  const [toDt,   setToDt]   = useState(() => toLocalDatetimeInput(new Date()));
+  const [filterKey, setFilterKey] = useState(0);
+  const [fitTrigger, setFitTrigger] = useState(0);
+
+  // Pagination
+  const PAGE_SIZE = 50;
+  const [locPage, setLocPage] = useState(1);
+
+  // Play state
+  const [isPlaying, setIsPlaying]   = useState(false);
+  const [playIdx,   setPlayIdx]     = useState(0);
+  const [playSpeed, setPlaySpeed]   = useState(500); // ms per step
+  const playRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const deviceApi = useApi(() => api.device(imei), [imei]);
   const personsApi = useApi(() => api.persons());
-  const locApi    = useApi(() => api.locations(imei, 50),        [imei]);
+  const locApi    = useApi(
+    () => api.locations(imei, 2000, new Date(fromDt).toISOString(), new Date(toDt).toISOString()),
+    [imei, filterKey],
+  );
   const alarmApi  = useApi(() => api.deviceAlarms(imei, 50),     [imei]);
   const healthApi = useApi(() => api.deviceHealth(imei, 50),     [imei]);
   const hbApi      = useApi(() => api.deviceHeartbeats(imei, 50),  [imei]);
   const wearApi    = useApi(() => api.deviceWearing(imei, 100),    [imei]);
   const photoApi   = useApi(() => api.photos(imei),                [imei]);
+
+  // Stop play + reset page when locations reload
+  useEffect(() => {
+    setIsPlaying(false);
+    setPlayIdx(0);
+    setLocPage(1);
+  }, [filterKey]);
+
+  const stopPlay = useCallback(() => {
+    if (playRef.current) { clearInterval(playRef.current); playRef.current = null; }
+    setIsPlaying(false);
+  }, []);
+
+  const startPlay = useCallback((points: [number, number][]) => {
+    if (points.length < 2) return;
+    setIsPlaying(true);
+    playRef.current = setInterval(() => {
+      setPlayIdx((prev) => {
+        if (prev >= points.length - 1) {
+          if (playRef.current) clearInterval(playRef.current);
+          setIsPlaying(false);
+          return prev;
+        }
+        return prev + 1;
+      });
+    }, playSpeed);
+  }, [playSpeed]);
+
+  useEffect(() => () => { if (playRef.current) clearInterval(playRef.current); }, []);
 
   const livePos = state.positions.get(imei);
   const wearing = state.wearingStatus.get(imei);
@@ -76,9 +139,10 @@ export function DeviceDetail() {
     setSelectedPersonId(device?.person_id != null ? String(device.person_id) : '');
   }, [device?.person_id]);
 
-  const polyline: [number, number][] = (locApi.data ?? [])
-    .filter((l) => l.gps_valid && l.latitude && l.longitude)
-    .map((l) => [l.latitude, l.longitude]);
+  const polyline: [number, number][] = [...(locApi.data ?? [])]
+    .reverse()
+    .filter((l) => l.latitude != null && l.longitude != null && (l.latitude !== 0 || l.longitude !== 0))
+    .map((l) => [l.latitude as number, l.longitude as number]);
 
   const tabs: { key: Tab; label: string; icon: typeof MapPin }[] = [
     { key: 'overview',   label: 'Umumiy',         icon: Smartphone },
@@ -314,75 +378,128 @@ export function DeviceDetail() {
       )}
 
       {tab === 'locations' && (() => {
-        // API newest-first → reverse for chronological polyline
         const locs = locApi.data ?? [];
-        const chronological = [...locs].reverse();
-        const routePoints: [number, number][] = chronological
-          .filter((l) => l.latitude != null && l.longitude != null && (l.latitude !== 0 || l.longitude !== 0))
-          .map((l) => [l.latitude, l.longitude]);
-        const startPt = routePoints[0] ?? null;
-        const endPt   = routePoints.length > 1 ? routePoints[routePoints.length - 1] : null;
+        // chronological order (oldest → newest) for route
+        const chronological = [...locs].reverse().filter(
+          (l) => l.latitude != null && l.longitude != null && (l.latitude !== 0 || l.longitude !== 0)
+        );
+        const routePoints: [number, number][] = chronological.map((l) => [l.latitude as number, l.longitude as number]);
+        const startPt  = routePoints[0] ?? null;
+        const endPt    = routePoints.length > 1 ? routePoints[routePoints.length - 1] : null;
         const mapCenter: [number, number] = endPt ?? startPt ?? [lat ?? 41.2995, lng ?? 69.2401];
+
+        // Current play position
+        const clampedIdx = Math.min(playIdx, routePoints.length - 1);
+        const playPos: [number, number] | null = routePoints.length > 0 ? routePoints[clampedIdx] : null;
+        const playLoc = chronological[clampedIdx];
+        // Played portion of the route
+        const playedRoute = routePoints.slice(0, clampedIdx + 1);
 
         return (
           <div className="space-y-4">
-            {/* Route map */}
-            <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden" style={{ height: 420 }}>
-              <div className="px-5 py-3 border-b border-slate-700 flex items-center justify-between">
-                <span className="text-sm font-medium text-slate-200">Yurgan yo'l tarixi</span>
+            {/* ── Date range filter ─────────────────────────────── */}
+            <div className="bg-slate-800 border border-slate-700 rounded-xl px-5 py-4">
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-slate-500">Dan</label>
+                  <input
+                    type="datetime-local"
+                    value={fromDt}
+                    onChange={(e) => setFromDt(e.target.value)}
+                    className="px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-slate-500">Gacha</label>
+                  <input
+                    type="datetime-local"
+                    value={toDt}
+                    onChange={(e) => setToDt(e.target.value)}
+                    className="px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <button
+                  onClick={() => { stopPlay(); setFilterKey((k) => k + 1); setFitTrigger((k) => k + 1); }}
+                  className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm rounded-lg transition-colors font-medium"
+                >
+                  <Search size={14} /> Qidirish
+                </button>
+                {/* Quick presets */}
+                {[
+                  { label: '1 soat', hours: 1 },
+                  { label: '6 soat', hours: 6 },
+                  { label: '24 soat', hours: 24 },
+                  { label: '7 kun', hours: 24 * 7 },
+                ].map(({ label, hours }) => (
+                  <button
+                    key={label}
+                    onClick={() => {
+                      const now = new Date();
+                      setFromDt(toLocalDatetimeInput(subHours(now, hours)));
+                      setToDt(toLocalDatetimeInput(now));
+                      stopPlay();
+                      setTimeout(() => { setFilterKey((k) => k + 1); setFitTrigger((k) => k + 1); }, 0);
+                    }}
+                    className="px-3 py-2 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-300 text-xs rounded-lg transition-colors"
+                  >
+                    {label}
+                  </button>
+                ))}
+                <span className="text-xs text-slate-500 ml-auto self-center">
+                  {locApi.loading ? 'Yuklanmoqda...' : `${locs.length} ta yozuv · ${routePoints.length} nuqta`}
+                </span>
+              </div>
+            </div>
+
+            {/* ── Route map ─────────────────────────────────────── */}
+            <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
+              <div className="px-5 py-3 border-b border-slate-700 flex items-center justify-between flex-wrap gap-2">
                 <div className="flex items-center gap-4 text-xs text-slate-500">
-                  <span className="flex items-center gap-1.5">
-                    <span className="w-3 h-3 rounded-full bg-emerald-500 inline-block" /> Boshlanish
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="w-3 h-3 rounded-full bg-red-500 inline-block" /> So'nggi
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="w-5 h-0.5 bg-blue-400 inline-block" /> Yo'l
-                  </span>
-                  <span>{routePoints.length} nuqta</span>
+                  <span className="text-sm font-medium text-slate-200">Yurgan yo'l</span>
+                  <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-emerald-500 inline-block" /> Start</span>
+                  <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-red-500 inline-block" /> Finish</span>
+                  <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-amber-400 inline-block" /> Play pozitsiyasi</span>
                 </div>
               </div>
-              <MapContainer center={mapCenter} zoom={13} className="w-full" style={{ height: 360 }}>
-                <TileLayer
-                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                />
-                <FitRoute positions={routePoints} />
 
-                {/* Route polyline */}
-                {routePoints.length > 1 && (
-                  <Polyline
-                    positions={routePoints}
-                    pathOptions={{ color: '#3b82f6', weight: 3, opacity: 0.8 }}
+              <div style={{ height: 420 }}>
+                <MapContainer center={mapCenter} zoom={13} className="w-full h-full">
+                  <TileLayer
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                   />
-                )}
+                  <FitRoute positions={routePoints} trigger={fitTrigger} />
+                  {isPlaying && <PanToPlay pos={playPos} />}
 
-                {/* Intermediate points */}
-                {chronological
-                  .filter((l) => l.latitude != null && l.longitude != null && (l.latitude !== 0 || l.longitude !== 0))
-                  .map((loc, i) => {
-                    const isFirst = i === 0;
-                    const isLast  = i === chronological.filter((l) => l.latitude != null && l.longitude != null && (l.latitude !== 0 || l.longitude !== 0)).length - 1;
-                    if (isFirst || isLast) return null; // handled separately below
+                  {/* Full route (grey) */}
+                  {routePoints.length > 1 && (
+                    <Polyline positions={routePoints} pathOptions={{ color: '#475569', weight: 2, opacity: 0.4 }} />
+                  )}
+                  {/* Played portion (blue) */}
+                  {playedRoute.length > 1 && (
+                    <Polyline positions={playedRoute} pathOptions={{ color: '#3b82f6', weight: 3, opacity: 0.9 }} />
+                  )}
+
+                  {/* Intermediate points */}
+                  {chronological.map((loc, i) => {
+                    const isEdge = i === 0 || i === chronological.length - 1;
+                    if (isEdge) return null;
                     return (
                       <CircleMarker
                         key={loc.id}
-                        center={[loc.latitude, loc.longitude]}
-                        radius={4}
+                        center={[loc.latitude as number, loc.longitude as number]}
+                        radius={3}
                         pathOptions={{
                           color: loc.gps_valid ? '#3b82f6' : '#f59e0b',
                           fillColor: loc.gps_valid ? '#3b82f6' : '#f59e0b',
-                          fillOpacity: 0.7,
-                          weight: 1,
+                          fillOpacity: 0.6, weight: 1,
                         }}
                       >
                         <Popup>
-                          <div className="text-xs space-y-1">
+                          <div className="text-xs space-y-0.5">
                             <div className="font-semibold">{format(new Date(loc.created_at), 'dd.MM.yyyy HH:mm:ss')}</div>
-                            <div>{loc.latitude?.toFixed(6)}, {loc.longitude?.toFixed(6)}</div>
+                            <div>{(loc.latitude as number).toFixed(6)}, {(loc.longitude as number).toFixed(6)}</div>
                             <div>Tezlik: {loc.speed} km/h</div>
-                            <div>GPS: <span className={loc.gps_valid ? 'text-green-600' : 'text-red-500'}>{loc.gps_valid ? 'Aniq' : 'Taxminiy'}</span></div>
                             {loc.battery != null && <div>Batareya: {loc.battery}%</div>}
                           </div>
                         </Popup>
@@ -390,78 +507,267 @@ export function DeviceDetail() {
                     );
                   })}
 
-                {/* Start marker (green) */}
-                {startPt && (
-                  <CircleMarker
-                    center={startPt}
-                    radius={8}
-                    pathOptions={{ color: '#059669', fillColor: '#10b981', fillOpacity: 1, weight: 2 }}
-                  >
-                    <Popup>
-                      <div className="text-xs font-semibold">Boshlanish nuqtasi<br />
-                        {chronological.find((l) => l.latitude != null && l.longitude != null && (l.latitude !== 0 || l.longitude !== 0)) &&
-                          format(new Date(chronological.find((l) => l.latitude != null)!.created_at), 'dd.MM.yyyy HH:mm:ss')
-                        }
-                      </div>
-                    </Popup>
-                  </CircleMarker>
-                )}
-
-                {/* End marker (red) */}
-                {endPt && (
-                  <CircleMarker
-                    center={endPt}
-                    radius={8}
-                    pathOptions={{ color: '#dc2626', fillColor: '#ef4444', fillOpacity: 1, weight: 2 }}
-                  >
-                    <Popup>
-                      <div className="text-xs font-semibold">So'nggi nuqta<br />
-                        {locs[0] && format(new Date(locs[0].created_at), 'dd.MM.yyyy HH:mm:ss')}
-                      </div>
-                    </Popup>
-                  </CircleMarker>
-                )}
-              </MapContainer>
-            </div>
-
-            {/* Locations table */}
-            <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
-              <div className="px-5 py-3 border-b border-slate-700 text-sm text-slate-400">
-                {locs.length} ta yozuv (so'nggi 50)
+                  {/* Start */}
+                  {startPt && (
+                    <CircleMarker center={startPt} radius={8} pathOptions={{ color: '#059669', fillColor: '#10b981', fillOpacity: 1, weight: 2 }}>
+                      <Popup><div className="text-xs font-semibold">Boshlanish<br />{chronological[0] && format(new Date(chronological[0].created_at), 'dd.MM.yyyy HH:mm:ss')}</div></Popup>
+                    </CircleMarker>
+                  )}
+                  {/* End */}
+                  {endPt && (
+                    <CircleMarker center={endPt} radius={8} pathOptions={{ color: '#dc2626', fillColor: '#ef4444', fillOpacity: 1, weight: 2 }}>
+                      <Popup><div className="text-xs font-semibold">So'nggi nuqta<br />{chronological[chronological.length - 1] && format(new Date(chronological[chronological.length - 1].created_at), 'dd.MM.yyyy HH:mm:ss')}</div></Popup>
+                    </CircleMarker>
+                  )}
+                  {/* Play cursor */}
+                  {playPos && (
+                    <CircleMarker center={playPos} radius={10} pathOptions={{ color: '#d97706', fillColor: '#fbbf24', fillOpacity: 1, weight: 2 }}>
+                      <Popup>
+                        {playLoc && (
+                          <div className="text-xs space-y-0.5">
+                            <div className="font-semibold">{format(new Date(playLoc.created_at), 'dd.MM.yyyy HH:mm:ss')}</div>
+                            <div>Tezlik: {playLoc.speed} km/h</div>
+                            {playLoc.battery != null && <div>Batareya: {playLoc.battery}%</div>}
+                          </div>
+                        )}
+                      </Popup>
+                    </CircleMarker>
+                  )}
+                </MapContainer>
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-left text-slate-500 border-b border-slate-700 bg-slate-800/80">
-                      {['#', 'Vaqt', 'GPS', 'Kenglik', 'Uzunlik', 'Tezlik', 'Batareya', 'Signal', 'MCC/MNC'].map((h) => (
-                        <th key={h} className="px-4 py-3 font-medium">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-700/40">
-                    {locs.map((loc, i) => (
-                      <tr key={loc.id} className="hover:bg-slate-700/20">
-                        <td className="px-4 py-2.5 text-slate-600 font-mono">{locs.length - i}</td>
-                        <td className="px-4 py-2.5 text-slate-400 font-mono">
-                          {format(new Date(loc.created_at), 'dd.MM HH:mm:ss')}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <span className={`font-medium ${loc.gps_valid ? 'text-emerald-400' : 'text-amber-400'}`}>
-                            {loc.gps_valid ? 'A' : 'V'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2.5 font-mono text-slate-300">{loc.latitude?.toFixed(6)}</td>
-                        <td className="px-4 py-2.5 font-mono text-slate-300">{loc.longitude?.toFixed(6)}</td>
-                        <td className="px-4 py-2.5 text-slate-300">{loc.speed} km/h</td>
-                        <td className="px-4 py-2.5"><BatteryBar value={loc.battery} showText={false} /></td>
-                        <td className="px-4 py-2.5"><SignalBars value={loc.gsm_signal} /></td>
-                        <td className="px-4 py-2.5 text-slate-500 font-mono">{loc.mcc}/{loc.mnc}</td>
-                      </tr>
+
+              {/* ── Play controls ───────────────────────────────── */}
+              <div className="px-5 py-3 border-t border-slate-700 bg-slate-800/80">
+                {/* Progress bar */}
+                <div className="mb-3">
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(routePoints.length - 1, 0)}
+                    value={clampedIdx}
+                    onChange={(e) => { stopPlay(); setPlayIdx(Number(e.target.value)); }}
+                    className="w-full h-1.5 accent-emerald-500 cursor-pointer"
+                    disabled={routePoints.length === 0}
+                  />
+                  <div className="flex justify-between text-xs text-slate-600 mt-1">
+                    <span>{chronological[0] ? format(new Date(chronological[0].created_at), 'dd.MM HH:mm') : '—'}</span>
+                    {playLoc && (
+                      <span className="text-amber-400 font-medium">
+                        {format(new Date(playLoc.created_at), 'dd.MM HH:mm:ss')} · {clampedIdx + 1}/{routePoints.length}
+                      </span>
+                    )}
+                    <span>{chronological[chronological.length - 1] ? format(new Date(chronological[chronological.length - 1].created_at), 'dd.MM HH:mm') : '—'}</span>
+                  </div>
+                </div>
+
+                {/* Buttons */}
+                <div className="flex items-center gap-3">
+                  <button onClick={() => { stopPlay(); setPlayIdx(0); }} disabled={routePoints.length === 0} title="Boshiga qaytish"
+                    className="p-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 disabled:opacity-40 transition-colors">
+                    <SkipBack size={16} />
+                  </button>
+
+                  {isPlaying ? (
+                    <button onClick={stopPlay} className="flex items-center gap-2 px-4 py-2 bg-amber-500/20 border border-amber-500/40 text-amber-400 rounded-lg text-sm font-medium transition-colors hover:bg-amber-500/30">
+                      <Pause size={15} /> Pauza
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        if (clampedIdx >= routePoints.length - 1) setPlayIdx(0);
+                        startPlay(routePoints);
+                      }}
+                      disabled={routePoints.length < 2}
+                      className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded-lg text-sm font-medium transition-colors"
+                    >
+                      <Play size={15} /> Play
+                    </button>
+                  )}
+
+                  <button onClick={() => { stopPlay(); setPlayIdx(routePoints.length - 1); }} disabled={routePoints.length === 0} title="Oxiriga o'tish"
+                    className="p-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 disabled:opacity-40 transition-colors">
+                    <SkipForward size={16} />
+                  </button>
+
+                  {/* Speed selector */}
+                  <div className="ml-auto flex items-center gap-2">
+                    <span className="text-xs text-slate-500">Tezlik:</span>
+                    {[
+                      { label: '0.5×', ms: 1000 },
+                      { label: '1×',   ms: 500  },
+                      { label: '2×',   ms: 250  },
+                      { label: '5×',   ms: 100  },
+                      { label: '10×',  ms: 50   },
+                    ].map(({ label, ms }) => (
+                      <button
+                        key={ms}
+                        onClick={() => { setPlaySpeed(ms); stopPlay(); }}
+                        className={`px-2.5 py-1 text-xs rounded-md border transition-colors ${
+                          playSpeed === ms
+                            ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400'
+                            : 'bg-slate-700 border-slate-600 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {label}
+                      </button>
                     ))}
-                  </tbody>
-                </table>
+                  </div>
+                </div>
               </div>
             </div>
+
+            {/* ── Locations table ───────────────────────────────── */}
+            {(() => {
+              const totalPages = Math.max(1, Math.ceil(locs.length / PAGE_SIZE));
+              const safePage   = Math.min(locPage, totalPages);
+              const pageSlice  = locs.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
+              // page window: up to 5 page numbers around current
+              const pageNums: number[] = [];
+              const delta = 2;
+              for (let p = Math.max(1, safePage - delta); p <= Math.min(totalPages, safePage + delta); p++) {
+                pageNums.push(p);
+              }
+
+              return (
+                <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
+                  {/* Header */}
+                  <div className="px-5 py-3 border-b border-slate-700 flex items-center justify-between gap-4 flex-wrap">
+                    <span className="text-sm text-slate-400">
+                      Jami <span className="text-slate-200 font-medium">{locs.length}</span> ta yozuv
+                      {locs.length > 0 && (
+                        <span className="ml-1 text-slate-500">
+                          · {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, locs.length)} ko'rsatilmoqda
+                        </span>
+                      )}
+                    </span>
+
+                    {/* Pagination controls — top */}
+                    {totalPages > 1 && (
+                      <div className="flex items-center gap-1 text-xs">
+                        <button
+                          onClick={() => setLocPage(1)}
+                          disabled={safePage === 1}
+                          className="px-2 py-1.5 rounded-md bg-slate-700 border border-slate-600 text-slate-400 hover:text-slate-200 disabled:opacity-30 transition-colors"
+                        >«</button>
+                        <button
+                          onClick={() => setLocPage((p) => Math.max(1, p - 1))}
+                          disabled={safePage === 1}
+                          className="px-2.5 py-1.5 rounded-md bg-slate-700 border border-slate-600 text-slate-400 hover:text-slate-200 disabled:opacity-30 transition-colors"
+                        >‹</button>
+
+                        {pageNums[0] > 1 && (
+                          <>
+                            <button onClick={() => setLocPage(1)} className="px-2.5 py-1.5 rounded-md bg-slate-700 border border-slate-600 text-slate-400 hover:text-slate-200 transition-colors">1</button>
+                            {pageNums[0] > 2 && <span className="px-1 text-slate-600">…</span>}
+                          </>
+                        )}
+
+                        {pageNums.map((p) => (
+                          <button
+                            key={p}
+                            onClick={() => setLocPage(p)}
+                            className={`px-2.5 py-1.5 rounded-md border transition-colors font-medium ${
+                              p === safePage
+                                ? 'bg-emerald-600 border-emerald-500 text-white'
+                                : 'bg-slate-700 border-slate-600 text-slate-400 hover:text-slate-200'
+                            }`}
+                          >{p}</button>
+                        ))}
+
+                        {pageNums[pageNums.length - 1] < totalPages && (
+                          <>
+                            {pageNums[pageNums.length - 1] < totalPages - 1 && <span className="px-1 text-slate-600">…</span>}
+                            <button onClick={() => setLocPage(totalPages)} className="px-2.5 py-1.5 rounded-md bg-slate-700 border border-slate-600 text-slate-400 hover:text-slate-200 transition-colors">{totalPages}</button>
+                          </>
+                        )}
+
+                        <button
+                          onClick={() => setLocPage((p) => Math.min(totalPages, p + 1))}
+                          disabled={safePage === totalPages}
+                          className="px-2.5 py-1.5 rounded-md bg-slate-700 border border-slate-600 text-slate-400 hover:text-slate-200 disabled:opacity-30 transition-colors"
+                        >›</button>
+                        <button
+                          onClick={() => setLocPage(totalPages)}
+                          disabled={safePage === totalPages}
+                          className="px-2 py-1.5 rounded-md bg-slate-700 border border-slate-600 text-slate-400 hover:text-slate-200 disabled:opacity-30 transition-colors"
+                        >»</button>
+
+                        <span className="ml-2 text-slate-600">{safePage}/{totalPages} sahifa</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Table */}
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-left text-slate-500 border-b border-slate-700 bg-slate-800/80">
+                          {['#', 'Vaqt', 'GPS', 'Kenglik', 'Uzunlik', 'Tezlik', 'Batareya', 'Signal', 'MCC/MNC'].map((h) => (
+                            <th key={h} className="px-4 py-3 font-medium">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-700/40">
+                        {pageSlice.map((loc, i) => {
+                          const rowNum = locs.length - ((safePage - 1) * PAGE_SIZE + i);
+                          return (
+                            <tr key={loc.id} className="hover:bg-slate-700/20">
+                              <td className="px-4 py-2.5 text-slate-600 font-mono">{rowNum}</td>
+                              <td className="px-4 py-2.5 text-slate-400 font-mono">{format(new Date(loc.created_at), 'dd.MM HH:mm:ss')}</td>
+                              <td className="px-4 py-2.5">
+                                <span className={`font-medium ${loc.gps_valid ? 'text-emerald-400' : 'text-amber-400'}`}>{loc.gps_valid ? 'A' : 'V'}</span>
+                              </td>
+                              <td className="px-4 py-2.5 font-mono text-slate-300">{(loc.latitude as number)?.toFixed(6)}</td>
+                              <td className="px-4 py-2.5 font-mono text-slate-300">{(loc.longitude as number)?.toFixed(6)}</td>
+                              <td className="px-4 py-2.5 text-slate-300">{loc.speed} km/h</td>
+                              <td className="px-4 py-2.5"><BatteryBar value={loc.battery} showText={false} /></td>
+                              <td className="px-4 py-2.5"><SignalBars value={loc.gsm_signal} /></td>
+                              <td className="px-4 py-2.5 text-slate-500 font-mono">{loc.mcc}/{loc.mnc}</td>
+                            </tr>
+                          );
+                        })}
+                        {pageSlice.length === 0 && (
+                          <tr>
+                            <td colSpan={9} className="px-4 py-12 text-center text-slate-500">
+                              Lokatsiyalar yo'q
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Bottom pagination */}
+                  {totalPages > 1 && (
+                    <div className="px-5 py-3 border-t border-slate-700 flex items-center justify-between gap-4 flex-wrap">
+                      <span className="text-xs text-slate-500">
+                        {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, locs.length)} / {locs.length}
+                      </span>
+                      <div className="flex items-center gap-2 text-xs">
+                        <button onClick={() => setLocPage(1)} disabled={safePage === 1}
+                          className="px-3 py-1.5 rounded-md bg-slate-700 border border-slate-600 text-slate-400 hover:text-slate-200 disabled:opacity-30 transition-colors">
+                          ← Birinchi
+                        </button>
+                        <button onClick={() => setLocPage((p) => Math.max(1, p - 1))} disabled={safePage === 1}
+                          className="px-3 py-1.5 rounded-md bg-slate-700 border border-slate-600 text-slate-400 hover:text-slate-200 disabled:opacity-30 transition-colors">
+                          ‹ Oldingi
+                        </button>
+                        <span className="px-3 py-1.5 text-slate-400">{safePage} / {totalPages}</span>
+                        <button onClick={() => setLocPage((p) => Math.min(totalPages, p + 1))} disabled={safePage === totalPages}
+                          className="px-3 py-1.5 rounded-md bg-slate-700 border border-slate-600 text-slate-400 hover:text-slate-200 disabled:opacity-30 transition-colors">
+                          Keyingi ›
+                        </button>
+                        <button onClick={() => setLocPage(totalPages)} disabled={safePage === totalPages}
+                          className="px-3 py-1.5 rounded-md bg-slate-700 border border-slate-600 text-slate-400 hover:text-slate-200 disabled:opacity-30 transition-colors">
+                          Oxirgi →
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         );
       })()}
