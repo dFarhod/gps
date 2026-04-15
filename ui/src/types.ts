@@ -15,6 +15,7 @@ export interface Device {
   person_id?: number | null;
   person_full_name?: string | null;
   person_phone?: string | null;
+  gps_interval_sec?: number | null;
   iccid?: string;
   imsi?: string;
   firmware_version?: string;

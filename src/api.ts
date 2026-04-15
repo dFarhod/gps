@@ -22,6 +22,7 @@ import {
   getStats,
   updateDevicePerson,
   assignDeviceToPerson,
+  updateDeviceInterval,
   getWearingEvents,
   getPersons,
   getPerson,
@@ -244,17 +245,26 @@ app.post('/api/devices/:imei/command', (req: Request, res: Response) => {
     case 'heartrate':     packet = buildBPXL(imei); break;
     case 'bloodpressure': packet = buildBPXY(imei); break;
     case 'bloodoxygen':   packet = buildBPXZ(imei); break;
-    case 'interval':
-      packet = buildBP15(imei, Number(params.seconds ?? 60));
+    case 'interval': {
+      const sec = Number(params.seconds ?? 60);
+      packet = buildBP15(imei, sec);
+      updateDeviceInterval(imei, sec).catch(() => {});
       break;
+    }
     case 'workmode':
-    case 'gps_on':
+    case 'gps_on': {
       // BP34: mode 8 = GPS priority over WiFi, GPS switch ON
-      packet = buildBP34(imei, Number(params.mode ?? 8), Number(params.interval ?? 60), 1);
+      const intervalSec = Number(params.interval ?? 60);
+      packet = buildBP34(imei, Number(params.mode ?? 8), intervalSec, 1);
+      updateDeviceInterval(imei, intervalSec).catch(() => {});
       break;
-    case 'gps_off':
-      packet = buildBP34(imei, Number(params.mode ?? 8), Number(params.interval ?? 60), 0);
+    }
+    case 'gps_off': {
+      const intervalSecOff = Number(params.interval ?? 60);
+      packet = buildBP34(imei, Number(params.mode ?? 8), intervalSecOff, 0);
+      updateDeviceInterval(imei, intervalSecOff).catch(() => {});
       break;
+    }
     case 'setserver':
       packet = buildBP19(imei, String(params.host ?? ''), Number(params.port ?? 4500));
       break;

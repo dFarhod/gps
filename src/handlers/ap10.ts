@@ -89,7 +89,7 @@ export function parseAP10(
     const responseFlag = segments[7] || '0';
     const wifiStr = segments[8] || '';
 
-    const alarmName = ALARM_CODES[alarmCode] || `Unknown alarm (${alarmCode})`;
+    const alarmName = ALARM_CODES[alarmCode] || `Noma'lum signal (${alarmCode})`;
     const wifiData = parseWifi(wifiStr);
 
     const packet: AlarmPacket = {

@@ -66,8 +66,8 @@ export function DeviceDetail() {
   const [savingPerson, setSavingPerson] = useState(false);
   const [personMessage, setPersonMessage] = useState<string | null>(null);
 
-  // Date range filter for locations tab
-  const [fromDt, setFromDt] = useState(() => toLocalDatetimeInput(subHours(new Date(), 24)));
+  // Date range filter for locations tab — default: last 7 days
+  const [fromDt, setFromDt] = useState(() => toLocalDatetimeInput(subHours(new Date(), 24 * 7)));
   const [toDt,   setToDt]   = useState(() => toLocalDatetimeInput(new Date()));
   const [filterKey, setFilterKey] = useState(0);
   const [fitTrigger, setFitTrigger] = useState(0);
@@ -259,6 +259,12 @@ export function DeviceDetail() {
                   { label: 'IMSI', value: device?.imsi },
                   { label: 'Firmware', value: device?.firmware_version },
                   { label: "Ro'yxatga olingan", value: device?.created_at ? format(new Date(device.created_at), 'dd.MM.yyyy HH:mm') : undefined },
+                  {
+                    label: 'GPS intervali',
+                    value: device?.gps_interval_sec != null
+                      ? `${device.gps_interval_sec} soniya`
+                      : undefined,
+                  },
                 ].map(({ label, value }) => value ? (
                   <div key={label} className="flex justify-between items-center py-1 border-b border-slate-700/50">
                     <span className="text-slate-500">{label}</span>
@@ -377,7 +383,12 @@ export function DeviceDetail() {
         </div>
       )}
 
-      {tab === 'locations' && (() => {
+      {tab === 'locations' && locApi.error && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-6 text-center text-red-400 text-sm">
+          Lokatsiyalar yuklanmadi: {locApi.error}
+        </div>
+      )}
+      {tab === 'locations' && !locApi.error && (() => {
         const locs = locApi.data ?? [];
         // chronological order (oldest → newest) for route
         const chronological = [...locs].reverse().filter(
@@ -428,8 +439,10 @@ export function DeviceDetail() {
                 {[
                   { label: '1 soat', hours: 1 },
                   { label: '6 soat', hours: 6 },
-                  { label: '24 soat', hours: 24 },
+                  { label: '1 kun', hours: 24 },
+                  { label: '3 kun', hours: 24 * 3 },
                   { label: '7 kun', hours: 24 * 7 },
+                  { label: '30 kun', hours: 24 * 30 },
                 ].map(({ label, hours }) => (
                   <button
                     key={label}
@@ -990,7 +1003,7 @@ export function DeviceDetail() {
       )}
 
       {tab === 'commands' && (
-        <DeviceCommands imei={imei} connected={isOnline} />
+        <DeviceCommands imei={imei} connected={isOnline} gpsIntervalSec={deviceApi.data?.gps_interval_sec} />
       )}
     </div>
   );

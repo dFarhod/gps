@@ -85,6 +85,12 @@ async function createSchema(client: PoolClient): Promise<void> {
     ADD COLUMN IF NOT EXISTS person_id INTEGER REFERENCES persons(id) ON DELETE SET NULL
   `);
 
+  // gps_interval_sec column — tracks the last configured GPS upload interval
+  await client.query(`
+    ALTER TABLE devices
+    ADD COLUMN IF NOT EXISTS gps_interval_sec INTEGER
+  `);
+
   // wearing_events — new table not in old schema
   await client.query(`
     CREATE TABLE IF NOT EXISTS wearing_events (
@@ -361,6 +367,16 @@ export async function updateDevicePerson(imei: string, fullName: string | null):
   return getDevice(imei);
 }
 
+export async function updateDeviceInterval(imei: string, intervalSec: number): Promise<void> {
+  const db = getPool();
+  await db.query(
+    `INSERT INTO devices (imei, gps_interval_sec, last_seen, created_at)
+     VALUES ($1, $2, NOW(), NOW())
+     ON CONFLICT (imei) DO UPDATE SET gps_interval_sec = EXCLUDED.gps_interval_sec`,
+    [imei, intervalSec]
+  );
+}
+
 export async function assignDeviceToPerson(imei: string, personId: number | null): Promise<unknown | null> {
   const db = getPool();
   await db.query(
@@ -473,6 +489,7 @@ export async function getDevices(): Promise<unknown[]> {
              COALESCE(p.full_name, d.full_name) AS display_name,
              d.iccid, d.imsi, d.firmware_version, d.last_seen, d.created_at,
              d.person_id,
+             d.gps_interval_sec,
              p.full_name AS person_full_name,
              p.phone     AS person_phone,
              COALESCE(l.latitude,  d.last_lat)         AS latitude,
@@ -510,6 +527,7 @@ export async function getDevice(imei: string): Promise<unknown | null> {
               COALESCE(p.full_name, d.full_name) AS display_name,
               d.iccid, d.imsi, d.firmware_version, d.last_seen, d.created_at,
               d.person_id,
+              d.gps_interval_sec,
               p.full_name AS person_full_name,
               p.phone     AS person_phone,
               COALESCE(l.latitude,  d.last_lat)         AS latitude,

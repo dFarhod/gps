@@ -5,7 +5,7 @@ import {
   Zap, ChevronDown, ChevronUp, Send, Navigation, NavigationOff, Wifi, WifiOff,
 } from 'lucide-react';
 
-interface Props { imei: string; connected: boolean }
+interface Props { imei: string; connected: boolean; gpsIntervalSec?: number | null }
 
 type CommandStatus = { loading: boolean; result: string | null; error: string | null };
 
@@ -75,10 +75,11 @@ function CmdButton({
   );
 }
 
-export function DeviceCommands({ imei, connected }: Props) {
+export function DeviceCommands({ imei, connected, gpsIntervalSec }: Props) {
+  const savedInterval = gpsIntervalSec != null ? String(gpsIntervalSec) : '60';
   const [status, setStatus] = useState<CommandStatus>(initialStatus);
-  const [intervalVal, setIntervalVal] = useState('60');
-  const [gpsInterval, setGpsInterval] = useState('60');
+  const [intervalVal, setIntervalVal] = useState(savedInterval);
+  const [gpsInterval, setGpsInterval] = useState(savedInterval);
   const [healthMin, setHealthMin] = useState('10');
   const [sos1, setSos1] = useState('');
   const [sos2, setSos2] = useState('');
@@ -125,9 +126,18 @@ export function DeviceCommands({ imei, connected }: Props) {
 
       {/* GPS */}
       <div className="bg-slate-800 border border-emerald-900/40 rounded-xl p-5">
-        <h3 className="font-semibold text-slate-200 mb-1 flex items-center gap-2">
-          <Navigation size={16} className="text-emerald-400" /> GPS boshqaruv
-        </h3>
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="font-semibold text-slate-200 flex items-center gap-2">
+            <Navigation size={16} className="text-emerald-400" /> GPS boshqaruv
+          </h3>
+          {gpsIntervalSec != null ? (
+            <span className="flex items-center gap-1.5 text-xs font-medium bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 px-2.5 py-1 rounded-lg">
+              <Clock size={12} /> Joriy: {gpsIntervalSec}s ({Math.floor(gpsIntervalSec / 60) > 0 ? `${Math.floor(gpsIntervalSec / 60)} daq` : ''}{gpsIntervalSec % 60 > 0 ? ` ${gpsIntervalSec % 60}s` : ''})
+            </span>
+          ) : (
+            <span className="text-xs text-slate-600 italic">Interval noma'lum</span>
+          )}
+        </div>
         <p className="text-xs text-slate-500 mb-4">
           GPS yoqilganda qurilma GPS signalini qidiradi (90s), topilmasa WiFi/LBS ishlatadi.
         </p>
@@ -187,9 +197,16 @@ export function DeviceCommands({ imei, connected }: Props) {
 
       {/* Lokatsiya interval */}
       <div className="bg-slate-800 border border-slate-700 rounded-xl p-5">
-        <h3 className="font-semibold text-slate-200 mb-4 flex items-center gap-2">
-          <MapPin size={16} className="text-blue-400" /> Lokatsiya intervali (BP15)
-        </h3>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-semibold text-slate-200 flex items-center gap-2">
+            <MapPin size={16} className="text-blue-400" /> Lokatsiya intervali (BP15)
+          </h3>
+          {gpsIntervalSec != null && (
+            <span className="flex items-center gap-1.5 text-xs font-medium bg-blue-500/15 border border-blue-500/30 text-blue-400 px-2.5 py-1 rounded-lg">
+              <Clock size={12} /> {gpsIntervalSec}s
+            </span>
+          )}
+        </div>
         <div className="flex items-center gap-3">
           <div className="flex-1">
             <label className="text-xs text-slate-500 mb-1 block">Interval (soniya)</label>
